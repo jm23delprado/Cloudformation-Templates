@@ -1,0 +1,273 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Simple HA Web Server (2 intances) receiving traffic from a loadbalancer
+
+Resources:
+
+###VPC###
+  VPC1:
+    Type: AWS::EC2::VPC
+    Properties:
+      Tags:
+        - Key: Name
+          Value: vpc1
+      CidrBlock: 192.168.0.0/16
+  IGW1:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: igw1
+  VPCAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref IGW1
+      VpcId: !Ref VPC1
+
+###NatGateway###
+  EIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGW1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: natgw1
+      AllocationId:
+        Fn::GetAtt:
+          - EIP1
+          - AllocationId
+      SubnetId: !Ref SubnetPublic1
+
+###Subnets###
+  SubnetPublic1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      Tags:
+        - Key: Name
+          Value: subnet_public1
+      VpcId: !Ref VPC1
+      CidrBlock: 192.168.1.0/24
+      AvailabilityZone: us-east-1a
+  SubnetPublic2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      Tags:
+        - Key: Name
+          Value: subnet_public2
+      VpcId: !Ref VPC1
+      CidrBlock: 192.168.2.0/24
+      AvailabilityZone: us-east-1b
+  SubnetPrivate1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      Tags:
+        - Key: Name
+          Value: subnet_private1
+      VpcId: !Ref VPC1
+      CidrBlock: 192.168.3.0/24
+      AvailabilityZone: us-east-1a
+  SubnetPrivate2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      Tags:
+        - Key: Name
+          Value: subnet_private2
+      VpcId: !Ref VPC1
+      CidrBlock: 192.168.4.0/24
+      AvailabilityZone: us-east-1b
+
+###RouteTablePublic###
+  RTablePublic:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: rtable_public
+      VpcId: !Ref VPC1
+  RoutePublic:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW1
+      RouteTableId: !Ref RTablePublic
+  SubAssocPublic1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RTablePublic
+      SubnetId: !Ref SubnetPublic1
+  SubAssocPublic2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RTablePublic
+      SubnetId: !Ref SubnetPublic2
+
+###RouteTablePrivate###
+  RTablePrivate:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: rtable_private
+      VpcId: !Ref VPC1
+  RoutePrivate:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGW1
+      RouteTableId: !Ref RTablePrivate
+  SubAssocPrivate1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RTablePrivate
+      SubnetId: !Ref SubnetPrivate1
+  SubAssocPrivate2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RTablePrivate
+      SubnetId: !Ref SubnetPrivate2
+
+###SecurityGroups###
+  sgBastion:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      Tags:
+        - Key: Name
+          Value: sg_bastion
+      GroupDescription: ssh from everyone
+      GroupName: sgBastion
+      VpcId: !Ref VPC1
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+  sgLB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      Tags:
+        - Key: Name
+          Value: sg_lb
+      GroupDescription: http to LoadBalancer
+      GroupName: sgLB
+      VpcId: !Ref VPC1
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+  sgEC2:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      Tags:
+        - Key: Name
+          Value: sg_ec2
+      GroupDescription: http to LoadBalancer
+      GroupName: sgEC2
+      VpcId: !Ref VPC1
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref sgBastion
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref sgLB
+
+###LoadBalancer###
+  LB1:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: LB1
+      SecurityGroups:
+        - !Ref sgLB
+      Subnets:
+        - !Ref SubnetPublic1
+        - !Ref SubnetPublic2
+      Type: application
+  TargetGroup1:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: TargetGroup1
+      Protocol: HTTP
+      Port: 80
+      VpcId: !Ref VPC1
+      TargetType: instance
+  LB1Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      LoadBalancerArn: !Ref LB1
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup1
+
+###AutoScalingGroup###
+  LaunchConfig1:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      LaunchConfigurationName: LaunchConfig1
+      ImageId: ami-07ebfd5b3428b6f4d
+      InstanceType: t2.micro
+      KeyName: keypair
+      SecurityGroups:
+        - !Ref sgEC2
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash -xe
+            sudo apt-get update -y
+            sudo apt-get install apache2 -y
+            sudo service apache2 start
+            sleep 5
+            sudo apt-get install -y htop stress
+  ASG1:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: ASG1
+      VPCZoneIdentifier:
+        - !Ref SubnetPrivate1
+        - !Ref SubnetPrivate2
+      MinSize: "2"
+      MaxSize: "2"
+      DesiredCapacity: "2"
+      LaunchConfigurationName: !Ref LaunchConfig1
+      TargetGroupARNs:
+        - !Ref TargetGroup1
+
+###Bastion###
+  Bastion:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-07ebfd5b3428b6f4d
+      InstanceType: t2.micro
+      KeyName: keypair
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref sgBastion
+          SubnetId: !Ref SubnetPublic1
+      Tags:
+        - Key: Name
+          Value: Bastion
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash -xe
+            sudo apt-get update -y
+            sudo apt-get install apache2 -y
+            sudo service apache2 start
+            sleep 5
+            sudo apt-get install -y htop stress
+
+Outputs:
+  URL:
+    Value: !Join
+      - ''
+      - - 'http://'
+        - !GetAtt LB1.DNSName
+    Description: Newly created URL
